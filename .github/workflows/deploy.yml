@@ -61,7 +61,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          npm ci
+          rm -rf node_modules package-lock.json
+          npm install
         # set working-directory if app is in a folder
         working-directory: .  
 
