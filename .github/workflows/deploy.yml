@@ -3,7 +3,7 @@ name: Deploy Terraform and Prototype App
 on:
   push:
     branches:
-      - module02   # later change to main
+      - main   # later change to main
 
 env:
   AWS_REGION: eu-west-1                     # set your region
