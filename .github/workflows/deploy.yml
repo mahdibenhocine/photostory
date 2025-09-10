@@ -191,13 +191,30 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Clean install dependencies
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install
+          npm install @rollup/rollup-linux-x64-gnu --save-optional
+        working-directory: .
+
+      - name: Verify Rollup installation
+        run: |
+          npm list rollup
+          npm list @rollup/rollup-linux-x64-gnu || echo "Optional dependency not installed, continuing..."
         working-directory: .
 
       - name: Build Prototype App
         run: npm run build
         working-directory: .
+        env:
+          NODE_ENV: production
 
       - name: Sync dist/ to S3
         run: aws s3 sync dist/ s3://${{ env.S3_BUCKET }} --delete
