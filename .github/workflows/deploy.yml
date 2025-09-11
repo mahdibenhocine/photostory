@@ -42,10 +42,143 @@ jobs:
         run: terraform apply -auto-approve
         working-directory: terraform
 
+  configure-cloudfront-oac:
+    name: Configure CloudFront OAC
+    runs-on: ubuntu-latest
+    needs: terraform
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check if OAC exists
+        id: check-oac
+        run: |
+          OAC_ID=$(aws cloudfront list-origin-access-controls \
+            --query "OriginAccessControlList.Items[?Name=='${OAC_NAME}'].Id" \
+            --output text)
+          if [ -z "$OAC_ID" ] || [ "$OAC_ID" == "None" ]; then
+            echo "oac-exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "oac-exists=true" >> $GITHUB_OUTPUT
+            echo "oac-id=$OAC_ID" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Origin Access Control (OAC)
+        id: create-oac
+        if: steps.check-oac.outputs.oac-exists == 'false'
+        run: |
+          OAC_ID=$(aws cloudfront create-origin-access-control \
+            --origin-access-control-config '{
+              "Name": "'"${OAC_NAME}"'",
+              "Description": "OAC for S3 bucket '"${S3_BUCKET}"'",
+              "OriginAccessControlOriginType": "s3",
+              "SigningBehavior": "always",
+              "SigningProtocol": "sigv4"
+            }' \
+            --query 'OriginAccessControl.Id' \
+            --output text)
+          echo "oac-id=$OAC_ID" >> $GITHUB_OUTPUT
+          echo "Created OAC with ID: $OAC_ID"
+
+      - name: Use existing OAC
+        id: use-existing-oac
+        if: steps.check-oac.outputs.oac-exists == 'true'
+        run: |
+          echo "oac-id=${{ steps.check-oac.outputs.oac-id }}" >> $GITHUB_OUTPUT
+          echo "Using existing OAC with ID: ${{ steps.check-oac.outputs.oac-id }}"
+
+      - name: Get CloudFront Distribution Config
+        id: get-config
+        run: |
+          aws cloudfront get-distribution-config \
+            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --query 'DistributionConfig' > distribution-config.json
+          
+          ETAG=$(aws cloudfront get-distribution-config \
+            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --query 'ETag' \
+            --output text)
+          echo "etag=$ETAG" >> $GITHUB_OUTPUT
+
+      - name: Update CloudFront Distribution with OAC
+        run: |
+          # Determine OAC ID
+          if [ "${{ steps.check-oac.outputs.oac-exists }}" == "true" ]; then
+            OAC_ID="${{ steps.check-oac.outputs.oac-id }}"
+          else
+            OAC_ID="${{ steps.create-oac.outputs.oac-id }}"
+          fi
+          
+          # Dynamically find the S3 origin by domain name
+          S3_ORIGIN_DOMAIN=$(jq -r '.Origins.Items[] | select(.DomainName|test("'$S3_BUCKET'")) | .Id' distribution-config.json)
+          
+          # Update the distribution JSON
+          jq --arg oac_id "$OAC_ID" --arg origin_id "$S3_ORIGIN_DOMAIN" '
+            .Origins.Items[] |= if .Id == $origin_id then
+              .OriginAccessControlId = $oac_id |
+              .S3OriginConfig.OriginAccessIdentity = ""
+            else .
+            end
+          ' distribution-config.json > updated-distribution-config.json
+          
+          cat updated-distribution-config.json
+          
+          aws cloudfront update-distribution \
+            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-config file://updated-distribution-config.json \
+            --if-match ${{ steps.get-config.outputs.etag }}
+
+      - name: Wait for CloudFront Distribution Deployment
+        run: |
+          echo "Waiting for CloudFront distribution to deploy..."
+          aws cloudfront wait distribution-deployed \
+            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }}
+
+      - name: Apply S3 Bucket Policy
+        run: |
+          cat > bucket-policy.json << EOF
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Sid": "AllowCloudFrontAccessViaOAC",
+                      "Effect": "Allow",
+                      "Principal": {
+                          "Service": "cloudfront.amazonaws.com"
+                      },
+                      "Action": "s3:GetObject",
+                      "Resource": "arn:aws:s3:::$S3_BUCKET/*",
+                      "Condition": {
+                          "StringEquals": {
+                              "AWS:SourceArn": "arn:aws:cloudfront::$AWS_ACCOUNT_ID:distribution/$CLOUDFRONT_DISTRIBUTION_ID"
+                          }
+                      }
+                  }
+              ]
+          }
+          EOF
+          
+          cat bucket-policy.json
+          
+          aws s3api put-bucket-policy \
+            --bucket $S3_BUCKET \
+            --policy file://bucket-policy.json
+
   build-and-deploy:
     name: Build Prototype App and Deploy
     runs-on: ubuntu-latest
-    needs: terraform
+    needs: configure-cloudfront-oac
 
     permissions:
       id-token: write
