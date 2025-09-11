@@ -83,8 +83,8 @@ jobs:
         run: |
           OAC_ID=$(aws cloudfront create-origin-access-control \
             --origin-access-control-config '{
-              "Name": "${{ env.OAC_NAME }}",
-              "Description": "OAC for S3 bucket ${{ env.S3_BUCKET }}",
+              "Name": "'"${OAC_NAME}"'",
+              "Description": "OAC for S3 bucket '"${S3_BUCKET}"'",
               "OriginAccessControlOriginType": "s3",
               "SigningBehavior": "always",
               "SigningProtocol": "sigv4"
@@ -130,6 +130,9 @@ jobs:
             .Origins.Items[0].S3OriginConfig.OriginAccessIdentity = ""
           ' distribution-config.json > updated-distribution-config.json
           
+          # Debug updated config
+          cat updated-distribution-config.json
+          
           # Update the distribution
           aws cloudfront update-distribution \
             --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
@@ -144,7 +147,7 @@ jobs:
 
       - name: Apply S3 Bucket Policy
         run: |
-          # Create the bucket policy JSON
+          # Create the bucket policy JSON with env vars expanded by shell
           cat > bucket-policy.json << EOF
           {
               "Version": "2012-10-17",
@@ -156,10 +159,10 @@ jobs:
                           "Service": "cloudfront.amazonaws.com"
                       },
                       "Action": "s3:GetObject",
-                      "Resource": "arn:aws:s3:::${{ env.S3_BUCKET }}/*",
+                      "Resource": "arn:aws:s3:::$S3_BUCKET/*",
                       "Condition": {
                           "StringEquals": {
-                              "AWS:SourceArn": "arn:aws:cloudfront::${{ env.AWS_ACCOUNT_ID }}:distribution/${{ env.CLOUDFRONT_DISTRIBUTION_ID }}"
+                              "AWS:SourceArn": "arn:aws:cloudfront::$AWS_ACCOUNT_ID:distribution/$CLOUDFRONT_DISTRIBUTION_ID"
                           }
                       }
                   }
@@ -167,9 +170,12 @@ jobs:
           }
           EOF
           
+          # Debug policy file
+          cat bucket-policy.json
+          
           # Apply the bucket policy
           aws s3api put-bucket-policy \
-            --bucket ${{ env.S3_BUCKET }} \
+            --bucket $S3_BUCKET \
             --policy file://bucket-policy.json
 
   build-and-deploy:
@@ -217,11 +223,12 @@ jobs:
           NODE_ENV: production
 
       - name: Sync dist/ to S3
-        run: aws s3 sync dist/ s3://${{ env.S3_BUCKET }} --delete
+        run: aws s3 sync dist/ s3://$S3_BUCKET --delete
         working-directory: .
 
       - name: Invalidate CloudFront Cache
         run: |
           aws cloudfront create-invalidation \
-            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --distribution-id $CLOUDFRONT_DISTRIBUTION_ID \
             --paths "/*"
+
