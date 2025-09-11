@@ -42,8 +42,8 @@ jobs:
         run: terraform apply -auto-approve
         working-directory: terraform
 
-  configure-cloudfront-oac:
-    name: Configure CloudFront OAC
+  build-and-deploy:
+    name: Build Prototype App and Deploy
     runs-on: ubuntu-latest
     needs: terraform
 
@@ -51,9 +51,6 @@ jobs:
       id-token: write
       contents: read
 
-    outputs:
-      oac-id: ${{ steps.create-oac.outputs.oac-id }}
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -63,165 +60,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Check if OAC exists
-        id: check-oac
-        run: |
-          OAC_ID=$(aws cloudfront list-origin-access-controls \
-            --query "OriginAccessControlList.Items[?Name=='${{ env.OAC_NAME }}'].Id" \
-            --output text)
-          if [ -z "$OAC_ID" ] || [ "$OAC_ID" == "None" ]; then
-            echo "oac-exists=false" >> $GITHUB_OUTPUT
-          else
-            echo "oac-exists=true" >> $GITHUB_OUTPUT
-            echo "oac-id=$OAC_ID" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Origin Access Control (OAC)
-        id: create-oac
-        if: steps.check-oac.outputs.oac-exists == 'false'
-        run: |
-          OAC_ID=$(aws cloudfront create-origin-access-control \
-            --origin-access-control-config '{
-              "Name": "'"${OAC_NAME}"'",
-              "Description": "OAC for S3 bucket '"${S3_BUCKET}"'",
-              "OriginAccessControlOriginType": "s3",
-              "SigningBehavior": "always",
-              "SigningProtocol": "sigv4"
-            }' \
-            --query 'OriginAccessControl.Id' \
-            --output text)
-          echo "oac-id=$OAC_ID" >> $GITHUB_OUTPUT
-          echo "Created OAC with ID: $OAC_ID"
-
-      - name: Use existing OAC
-        id: use-existing-oac
-        if: steps.check-oac.outputs.oac-exists == 'true'
-        run: |
-          echo "oac-id=${{ steps.check-oac.outputs.oac-id }}" >> $GITHUB_OUTPUT
-          echo "Using existing OAC with ID: ${{ steps.check-oac.outputs.oac-id }}"
-
-      - name: Get CloudFront Distribution Config
-        id: get-config
-        run: |
-          aws cloudfront get-distribution-config \
-            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --query 'DistributionConfig' > distribution-config.json
-          
-          # Get current ETag for the distribution
-          ETAG=$(aws cloudfront get-distribution-config \
-            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --query 'ETag' \
-            --output text)
-          echo "etag=$ETAG" >> $GITHUB_OUTPUT
-
-      - name: Update CloudFront Distribution with OAC
-        run: |
-          # Get OAC ID from previous steps
-          if [ "${{ steps.check-oac.outputs.oac-exists }}" == "true" ]; then
-            OAC_ID="${{ steps.check-oac.outputs.oac-id }}"
-          else
-            OAC_ID="${{ steps.create-oac.outputs.oac-id }}"
-          fi
-          
-          # Update the distribution config to use OAC
-          jq --arg oac_id "$OAC_ID" '
-            .Origins.Items[0].OriginAccessControlId = $oac_id |
-            .Origins.Items[0].S3OriginConfig.OriginAccessIdentity = ""
-          ' distribution-config.json > updated-distribution-config.json
-          
-          # Debug updated config
-          cat updated-distribution-config.json
-          
-          # Update the distribution
-          aws cloudfront update-distribution \
-            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --distribution-config file://updated-distribution-config.json \
-            --if-match ${{ steps.get-config.outputs.etag }}
-
-      - name: Wait for CloudFront Distribution Deployment
-        run: |
-          echo "Waiting for CloudFront distribution to deploy..."
-          aws cloudfront wait distribution-deployed \
-            --id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }}
-
-      - name: Apply S3 Bucket Policy
-        run: |
-          # Create the bucket policy JSON with env vars expanded by shell
-          cat > bucket-policy.json << EOF
-          {
-              "Version": "2012-10-17",
-              "Statement": [
-                  {
-                      "Sid": "AllowCloudFrontServicePrincipal",
-                      "Effect": "Allow",
-                      "Principal": {
-                          "Service": "cloudfront.amazonaws.com"
-                      },
-                      "Action": "s3:GetObject",
-                      "Resource": "arn:aws:s3:::$S3_BUCKET/*",
-                      "Condition": {
-                          "StringEquals": {
-                              "AWS:SourceArn": "arn:aws:cloudfront::$AWS_ACCOUNT_ID:distribution/$CLOUDFRONT_DISTRIBUTION_ID"
-                          }
-                      }
-                  }
-              ]
-          }
-          EOF
-          
-          # Debug policy file
-          cat bucket-policy.json
-          
-          # Apply the bucket policy
-          aws s3api put-bucket-policy \
-            --bucket $S3_BUCKET \
-            --policy file://bucket-policy.json
-
-  build-and-deploy:
-    name: Build Prototype App and Deploy
-    runs-on: ubuntu-latest
-    needs: configure-cloudfront-oac
-
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Clean install dependencies
+        
+      - name: Install Dependencies
         run: |
           rm -rf node_modules package-lock.json
           npm install
-          npm install @rollup/rollup-linux-x64-gnu --save-optional
         working-directory: .
-
-      - name: Verify Rollup installation
-        run: |
-          npm list rollup
-          npm list @rollup/rollup-linux-x64-gnu || echo "Optional dependency not installed, continuing..."
-        working-directory: .
-
-      - name: Build Prototype App
+        
+      - name: Build Prototype App   
         run: npm run build
         working-directory: .
-        env:
-          NODE_ENV: production
-
+    
       - name: Sync dist/ to S3
         run: aws s3 sync dist/ s3://$S3_BUCKET --delete
         working-directory: .
