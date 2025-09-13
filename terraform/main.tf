@@ -1,17 +1,30 @@
 provider "aws" {
-  region = "eu-west-1" # adjust to your chosen region
+  region = "eu-west-1"
 }
 
-# Example S3 bucket for website content
+# S3 bucket for website content
 resource "aws_s3_bucket" "website_bucket" {
-  bucket = "amir-photostory-s3-repo"   # must be unique globally
+  bucket = "amir-photostory-s3-repo"
+  acl    = "private"   # private because CloudFront OAC will access it
 }
 
-# CloudFront distribution with S3 as origin
+# CloudFront Origin Access Control (OAC)
+resource "aws_cloudfront_origin_access_control" "s3_oac" {
+  name                             = "my-s3-oac"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                 = "always"
+  signing_protocol                 = "sigv4"
+  description                      = "OAC for S3 bucket ${aws_s3_bucket.website_bucket.bucket}"
+}
+
+# CloudFront distribution
 resource "aws_cloudfront_distribution" "cdn" {
   origin {
     domain_name = aws_s3_bucket.website_bucket.bucket_regional_domain_name
     origin_id   = "s3-origin"
+
+    # Attach OAC to S3 origin
+    origin_access_control_id = aws_cloudfront_origin_access_control.s3_oac.id
   }
 
   enabled             = true
@@ -41,4 +54,24 @@ resource "aws_cloudfront_distribution" "cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
+}
+
+# Bucket policy allowing CloudFront OAC access
+resource "aws_s3_bucket_policy" "website_policy" {
+  bucket = aws_s3_bucket.website_bucket.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowCloudFrontAccessViaOAC"
+        Effect    = "Allow"
+        Principal = {
+          Service = "cloudfront.amazonaws.com"
+        }
+        Action   = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.website_bucket.arn}/*"
+      }
+    ]
+  })
 }
