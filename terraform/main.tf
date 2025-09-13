@@ -5,7 +5,6 @@ provider "aws" {
 # S3 bucket for website content
 resource "aws_s3_bucket" "website_bucket" {
   bucket = "amir-photostory-s3-repo"
-  acl    = "private"   # private because CloudFront OAC will access it
 }
 
 # CloudFront Origin Access Control (OAC)
