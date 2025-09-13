@@ -1,0 +1,112 @@
+name: Deploy Terraform and Prototype App
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: "025066267440"
+  S3_BUCKET: amir-photostory-s3-repo
+  CLOUDFRONT_DISTRIBUTION_ID: ES6ZB8XJ2PHU4
+
+jobs:
+  terraform-destroy-cdn:
+    name: Destroy CloudFront Distribution
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Destroy CloudFront Distribution only
+        run: terraform destroy -auto-approve -target=aws_cloudfront_distribution.cdn
+        working-directory: terraform
+
+  terraform-apply:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    needs: terraform-destroy-cdn
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: terraform
+
+  build-and-deploy:
+    name: Build Prototype App and Deploy
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Dependencies
+        run: |
+          rm -rf node_modules package-lock.json
+          npm install
+        working-directory: .
+
+      - name: Build Prototype App
+        run: npm run build
+        working-directory: .
+
+      - name: Sync dist/ to S3
+        run: aws s3 sync dist/ s3://${{ env.S3_BUCKET }} --delete
+        working-directory: .
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"
+
