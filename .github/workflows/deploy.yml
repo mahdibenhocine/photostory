@@ -33,6 +33,14 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Install Trivy v2
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          trivy --version
+
+      - name: Scan Terraform for Vulnerabilities
+        run: trivy fs --security-checks config terraform/
+
       - name: Terraform Init
         run: terraform init
         working-directory: terraform

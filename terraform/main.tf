@@ -7,7 +7,7 @@ resource "aws_s3_bucket" "website_bucket" {
   bucket = "amir-photostory-s3-repo"
 }
 
-# CloudFront Origin Access Control (OAC) new
+# CloudFront Origin Access Control (OAC) new v2
 resource "aws_cloudfront_origin_access_control" "s3_oac" {
   name                             = "my-s3-oac"
   origin_access_control_origin_type = "s3"
