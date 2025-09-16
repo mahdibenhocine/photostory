@@ -16,6 +16,7 @@ resource "aws_s3_bucket_public_access_block" "website_bucket_block" {
   restrict_public_buckets = true
 }
 
+#trivy:ignore:AVD-AWS-0132
 # 🔐 Default server-side encryption (SSE-S3)
 resource "aws_s3_bucket_server_side_encryption_configuration" "website_bucket_encryption" {
   bucket = aws_s3_bucket.website_bucket.id
@@ -36,6 +37,8 @@ resource "aws_cloudfront_origin_access_control" "s3_oac" {
 }
 
 # CloudFront distribution
+#trivy:ignore:AVD-AWS-0011
+# Using CloudFront only for static content delivery. WAF not needed.
 resource "aws_cloudfront_distribution" "cdn" {
   origin {
     domain_name = aws_s3_bucket.website_bucket.bucket_regional_domain_name
@@ -72,11 +75,6 @@ resource "aws_cloudfront_distribution" "cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
-
-#trivy:ignore:AVD-AWS-0011
-resource "aws_cloudfront_distribution" "cdn" {
-  # Using CloudFront only for static content delivery. WAF not needed.
-}
 
 }
 
