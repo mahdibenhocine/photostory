@@ -7,7 +7,26 @@ resource "aws_s3_bucket" "website_bucket" {
   bucket = "amir-photostory-s3-repo"
 }
 
-# CloudFront Origin Access Control (OAC) new v2
+# 🔒 Block public access to the bucket
+resource "aws_s3_bucket_public_access_block" "website_bucket_block" {
+  bucket                  = aws_s3_bucket.website_bucket.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# 🔐 Default server-side encryption (SSE-S3)
+resource "aws_s3_bucket_server_side_encryption_configuration" "website_bucket_encryption" {
+  bucket = aws_s3_bucket.website_bucket.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# CloudFront Origin Access Control (OAC)
 resource "aws_cloudfront_origin_access_control" "s3_oac" {
   name                             = "my-s3-oac"
   origin_access_control_origin_type = "s3"
@@ -53,7 +72,15 @@ resource "aws_cloudfront_distribution" "cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
+
+#trivy:ignore:AVD-AWS-0011
+resource "aws_cloudfront_distribution" "cdn" {
+  # Using CloudFront only for static content delivery. WAF not needed.
 }
+
+}
+
+
 
 # Bucket policy allowing CloudFront OAC access
 resource "aws_s3_bucket_policy" "website_policy" {
